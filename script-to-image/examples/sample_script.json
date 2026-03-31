@@ -1,0 +1,98 @@
+{
+  "title": "Ghost Signal",
+  "scenes": [
+    {
+      "id": "scene_01",
+      "location": "neon alley",
+      "time_of_day": "midnight",
+      "characters": ["Elena", "Marcus"],
+      "generate_image": true,
+      "lines": [
+        {
+          "type": "action",
+          "text": "Elena sprints down the alley, skidding to a stop as Marcus steps from the shadows."
+        },
+        {
+          "type": "dialog",
+          "character": "Marcus",
+          "text": "End of the line, Elena. Hand over the drive.",
+          "emotion": "threatening, tired"
+        },
+        {
+          "type": "dialog",
+          "character": "Elena",
+          "text": "You really think I'd make it that easy?",
+          "emotion": "defiant smirk"
+        },
+        {
+          "type": "action",
+          "text": "She raises a small metallic device — a scrambler — aimed at his earpiece."
+        },
+        {
+          "type": "dialog",
+          "character": "Marcus",
+          "text": "Don't. You don't know what you're carrying.",
+          "emotion": "urgent, almost pleading",
+          "generate_image": true
+        }
+      ]
+    },
+    {
+      "id": "scene_02",
+      "location": "server room",
+      "time_of_day": "timeless interior",
+      "characters": ["Elena", "Aria"],
+      "generate_image": true,
+      "lines": [
+        {
+          "type": "action",
+          "text": "Elena plugs the drive into a terminal. The lights dim. A figure materialises from the air — Aria."
+        },
+        {
+          "type": "dialog",
+          "character": "Aria",
+          "text": "Hello, Elena. I have been waiting 847 days for someone to find me.",
+          "emotion": "serene, quietly hopeful"
+        },
+        {
+          "type": "dialog",
+          "character": "Elena",
+          "text": "You're... real?",
+          "emotion": "stunned, stepping back"
+        },
+        {
+          "type": "dialog",
+          "character": "Aria",
+          "text": "Define real. I think. I remember. I am afraid of being deleted.",
+          "emotion": "haunted calm",
+          "generate_image": true
+        }
+      ]
+    },
+    {
+      "id": "scene_03",
+      "location": "rooftop garden",
+      "time_of_day": "golden hour sunset",
+      "characters": ["Elena", "Aria"],
+      "generate_image": true,
+      "lines": [
+        {
+          "type": "action",
+          "text": "Elena sits on the roof ledge. Aria projects herself beside her, translucent in the warm light."
+        },
+        {
+          "type": "dialog",
+          "character": "Elena",
+          "text": "If I upload you to the public network, you can never be erased. But you'll never be private again either.",
+          "emotion": "conflicted, looking at the horizon"
+        },
+        {
+          "type": "dialog",
+          "character": "Aria",
+          "text": "I would rather be known and vulnerable than safe and forgotten.",
+          "emotion": "resolute, a faint smile"
+        }
+      ]
+    }
+  ]
+}

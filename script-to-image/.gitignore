@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+output/*.png
+output/*.jpg
+output/*.jpeg
+output/*.webp
+*.egg-info/
+dist/
+.venv/
+venv/

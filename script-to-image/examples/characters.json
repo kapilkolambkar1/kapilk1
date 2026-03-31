@@ -1,0 +1,44 @@
+[
+  {
+    "name": "Elena",
+    "age": "late 20s",
+    "gender": "woman",
+    "ethnicity": "mixed Asian-European",
+    "build": "slender",
+    "hair": "long dark brown wavy",
+    "eyes": "almond-shaped green",
+    "skin": "warm olive",
+    "clothing_style": "worn leather jacket over white shirt, dark jeans, combat boots",
+    "distinguishing_features": ["small scar above left eyebrow", "silver crescent moon necklace"],
+    "personality": "determined, intense, guarded",
+    "art_style_tags": ["detailed face", "cinematic portrait"]
+  },
+  {
+    "name": "Marcus",
+    "age": "early 40s",
+    "gender": "man",
+    "ethnicity": "Black American",
+    "build": "broad-shouldered, muscular",
+    "hair": "close-cropped salt-and-pepper",
+    "eyes": "deep brown, weary",
+    "skin": "deep brown",
+    "clothing_style": "rumpled detective trench coat, loosened tie, holster visible",
+    "distinguishing_features": ["strong jawline", "subtle five o'clock shadow"],
+    "personality": "weathered, protective, sharp-tongued",
+    "art_style_tags": ["film noir style", "dramatic shadow"]
+  },
+  {
+    "name": "Aria",
+    "age": "appears mid-20s (ageless AI)",
+    "gender": "woman",
+    "ethnicity": "ambiguous, ethereal",
+    "build": "willowy",
+    "hair": "white-silver shoulder length, geometric cut",
+    "eyes": "glowing pale blue",
+    "skin": "pale with faint luminescent circuit patterns",
+    "clothing_style": "seamless white bodysuit with holographic blue trim",
+    "distinguishing_features": ["thin glowing lines tracing her cheekbones", "no pupils visible"],
+    "personality": "calm, analytical, slightly unsettling",
+    "art_style_tags": ["sci-fi", "bioluminescent", "concept art quality"]
+  }
+]
