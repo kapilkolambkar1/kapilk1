@@ -95,6 +95,9 @@ def _init_state():
         "extra_style": "",
         "per_line": False,
         "generating": False,
+        # Character Canvas approval state
+        "canvas_chars": [],        # list of dicts per character
+        "canvas_analyzed": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -651,6 +654,164 @@ with tab_export:
 
         st.divider()
 
+        # ── Character Canvas — analysis + approval ───────────────────────
+        st.subheader("🎭 Character Canvas (Sheet Tab 2)")
+        st.caption(
+            "Analyze the script to extract every character, enrich from the "
+            "character sheet, add an **Image URL**, then **approve** each one "
+            "before it gets pushed to Google Sheets."
+        )
+
+        col_analyze, col_reset = st.columns([2, 1])
+        if col_analyze.button("🔍 Analyze Script for Characters", use_container_width=True):
+            from generators.sheets_exporter import build_character_canvas_rows
+
+            raw_rows = build_character_canvas_rows(
+                script=script,
+                char_sheet=st.session_state.char_sheet,
+            )
+
+            # Merge into session state, preserving any image URLs already entered
+            existing = {c["name"]: c for c in st.session_state.canvas_chars}
+            merged = []
+            for row in raw_rows:
+                prev = existing.get(row.name, {})
+                merged.append({
+                    "name": row.name,
+                    "age": row.age,
+                    "gender": row.gender,
+                    "ethnicity": row.ethnicity,
+                    "build": row.build,
+                    "hair": row.hair,
+                    "eyes": row.eyes,
+                    "skin": row.skin,
+                    "clothing_style": row.clothing_style,
+                    "distinguishing_features": row.distinguishing_features,
+                    "personality": row.personality,
+                    "art_style_tags": row.art_style_tags,
+                    "visual_description": row.visual_description,
+                    "scenes_appears_in": row.scenes_appears_in,
+                    "image_url": prev.get("image_url", ""),
+                    "notes": prev.get("notes", ""),
+                    "approved": prev.get("approved", True),
+                })
+            st.session_state.canvas_chars = merged
+            st.session_state.canvas_analyzed = True
+            st.rerun()
+
+        if col_reset.button("🗑️ Reset", use_container_width=True):
+            st.session_state.canvas_chars = []
+            st.session_state.canvas_analyzed = False
+            st.rerun()
+
+        if st.session_state.canvas_analyzed and st.session_state.canvas_chars:
+            st.markdown(
+                f"Found **{len(st.session_state.canvas_chars)} character(s)**. "
+                "Fill in the Image URL for each and tick **Approve** to include them in the sheet."
+            )
+
+            # Palette for card borders (mirrors CHARACTER_COLORS)
+            _CARD_COLORS = [
+                "#D0E8FF", "#D5F5E3", "#FAD7A0", "#E8DAEF",
+                "#FDEBD0", "#D6EAF8", "#FDEDEC", "#E9F7EF",
+            ]
+
+            updated_chars = []
+            for idx, char in enumerate(st.session_state.canvas_chars):
+                border_color = _CARD_COLORS[idx % len(_CARD_COLORS)]
+
+                st.markdown(
+                    f'<div style="border-left:4px solid {border_color};'
+                    f'padding:8px 14px;margin-bottom:6px;border-radius:0 8px 8px 0;'
+                    f'background:#1e1e2e;">',
+                    unsafe_allow_html=True,
+                )
+
+                hdr_col, approve_col = st.columns([6, 1])
+                hdr_col.markdown(f"#### {char['name']}")
+                approved = approve_col.checkbox(
+                    "Approve", value=char["approved"], key=f"approve_{char['name']}"
+                )
+
+                with st.expander(
+                    f"{'✅' if approved else '⬜'} {char['name']} — "
+                    f"{char.get('gender','')} {char.get('age','')} · "
+                    f"{char.get('scenes_appears_in','')}",
+                    expanded=False,
+                ):
+                    c1, c2, c3 = st.columns(3)
+                    c1.text_input("Age",    value=char["age"],    key=f"age_{char['name']}",    disabled=True)
+                    c2.text_input("Gender", value=char["gender"], key=f"gender_{char['name']}", disabled=True)
+                    c3.text_input("Build",  value=char["build"],  key=f"build_{char['name']}",  disabled=True)
+
+                    c4, c5, c6 = st.columns(3)
+                    c4.text_input("Hair", value=char["hair"], key=f"hair_{char['name']}", disabled=True)
+                    c5.text_input("Eyes", value=char["eyes"], key=f"eyes_{char['name']}", disabled=True)
+                    c6.text_input("Skin", value=char["skin"], key=f"skin_{char['name']}", disabled=True)
+
+                    st.text_input(
+                        "Clothing Style", value=char["clothing_style"],
+                        key=f"cloth_{char['name']}", disabled=True
+                    )
+                    st.text_area(
+                        "Visual Description (auto-generated)",
+                        value=char["visual_description"],
+                        height=68,
+                        key=f"vdesc_{char['name']}",
+                        disabled=True,
+                    )
+
+                    # Editable fields
+                    image_url = st.text_input(
+                        "🖼️ Image URL",
+                        value=char["image_url"],
+                        key=f"imgurl_{char['name']}",
+                        placeholder="https://… (paste a generated or reference image URL)",
+                    )
+                    notes = st.text_input(
+                        "📝 Notes",
+                        value=char["notes"],
+                        key=f"notes_{char['name']}",
+                        placeholder="casting notes, costume details, references…",
+                    )
+
+                st.markdown("</div>", unsafe_allow_html=True)
+
+                updated_chars.append({**char, "approved": approved,
+                                       "image_url": image_url, "notes": notes})
+
+            # Write back any edits immediately
+            st.session_state.canvas_chars = updated_chars
+
+            approved_count = sum(1 for c in updated_chars if c["approved"])
+            st.info(
+                f"**{approved_count} / {len(updated_chars)} character(s) approved** "
+                f"and will appear in the Character Canvas tab."
+            )
+
+            # Canvas preview table
+            if st.button("👁️ Preview Character Canvas", use_container_width=True):
+                import pandas as _pd
+                from generators.sheets_exporter import CANVAS_COLUMNS, build_character_canvas_rows
+
+                overrides = {c["name"]: {"image_url": c["image_url"], "notes": c["notes"]}
+                             for c in updated_chars if c["approved"]}
+                approved_rows = build_character_canvas_rows(
+                    script, st.session_state.char_sheet, approved_overrides=overrides
+                )
+                approved_rows = [r for r in approved_rows
+                                 if r.name in overrides]
+
+                preview_df = _pd.DataFrame(
+                    [r.as_list() for r in approved_rows], columns=CANVAS_COLUMNS
+                )
+                st.dataframe(preview_df, use_container_width=True, height=260)
+
+        elif not st.session_state.canvas_analyzed:
+            st.info("Click **Analyze Script for Characters** above to populate the canvas.")
+
+        st.divider()
+
         # ── Export options ───────────────────────────────────────────────
         col_csv, col_gsheet = st.columns(2, gap="large")
 
@@ -738,6 +899,21 @@ with tab_export:
                         st.stop()
 
                 try:
+                    # Build approved canvas rows to pass as Tab 2
+                    canvas_rows_to_push = None
+                    approved_chars = [c for c in st.session_state.canvas_chars if c.get("approved")]
+                    if approved_chars:
+                        from generators.sheets_exporter import build_character_canvas_rows
+                        overrides = {c["name"]: {"image_url": c["image_url"], "notes": c["notes"]}
+                                     for c in approved_chars}
+                        canvas_rows_to_push = [
+                            r for r in build_character_canvas_rows(
+                                script, st.session_state.char_sheet,
+                                approved_overrides=overrides
+                            )
+                            if r.name in overrides
+                        ]
+
                     with st.spinner("Creating Google Sheet…"):
                         url = exp.to_google_sheets(
                             script,
@@ -745,8 +921,11 @@ with tab_export:
                             share_with=share_email or None,
                             service_account_json=tmp_sa or sa_path,
                             oauth_credentials=oauth_p,
+                            canvas_rows=canvas_rows_to_push,
                         )
-                    st.success("Google Sheet created!")
+                    tab2_note = (f" + Character Canvas ({len(canvas_rows_to_push)} characters)"
+                                 if canvas_rows_to_push else "")
+                    st.success(f"Google Sheet created{tab2_note}!")
                     st.markdown(f"**[Open Sheet]({url})**")
                     st.code(url)
                 except Exception as e:

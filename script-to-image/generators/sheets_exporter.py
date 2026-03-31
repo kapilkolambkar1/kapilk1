@@ -48,7 +48,7 @@ Usage
 import csv
 import io
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -83,9 +83,101 @@ COLUMNS = [
     "Image Prompt", "Notes",
 ]
 
+# ---------------------------------------------------------------------------
+# Character Canvas — Tab 2
+# ---------------------------------------------------------------------------
+
+CANVAS_COLUMNS = [
+    "#", "Name", "Age", "Gender", "Ethnicity", "Build",
+    "Hair", "Eyes", "Skin", "Clothing Style",
+    "Distinguishing Features", "Personality",
+    "Art Style Tags", "Visual Description",
+    "Image URL", "Scenes Appears In", "Notes",
+]
+
+
+@dataclass
+class CharacterCanvasRow:
+    num: int
+    name: str
+    age: str = ""
+    gender: str = ""
+    ethnicity: str = ""
+    build: str = ""
+    hair: str = ""
+    eyes: str = ""
+    skin: str = ""
+    clothing_style: str = ""
+    distinguishing_features: str = ""
+    personality: str = ""
+    art_style_tags: str = ""
+    visual_description: str = ""
+    image_url: str = ""
+    scenes_appears_in: str = ""
+    notes: str = ""
+
+    def as_list(self) -> list:
+        return [
+            self.num, self.name, self.age, self.gender, self.ethnicity,
+            self.build, self.hair, self.eyes, self.skin, self.clothing_style,
+            self.distinguishing_features, self.personality,
+            self.art_style_tags, self.visual_description,
+            self.image_url, self.scenes_appears_in, self.notes,
+        ]
+
+
+def build_character_canvas_rows(
+    script: Script,
+    char_sheet=None,          # models.character.CharacterSheet or None
+    approved_overrides: Optional[dict] = None,  # {name: {image_url, notes, …}}
+) -> list[CharacterCanvasRow]:
+    """
+    Build one CharacterCanvasRow per unique character found in the script.
+
+    - Names + scenes come from the Script.
+    - Visual details come from the CharacterSheet (if loaded).
+    - image_url / notes come from approved_overrides (user input).
+    """
+    # Collect unique characters and which scenes they appear in
+    char_scenes: dict[str, list[str]] = {}
+    for scene in script.scenes:
+        for name in scene.characters:
+            char_scenes.setdefault(name, [])
+            if scene.id not in char_scenes[name]:
+                char_scenes[name].append(scene.id)
+
+    rows = []
+    for num, (name, scene_ids) in enumerate(char_scenes.items(), start=1):
+        overrides = (approved_overrides or {}).get(name, {})
+
+        # Pull from CharacterSheet if available
+        char = char_sheet.get(name) if char_sheet else None
+
+        rows.append(CharacterCanvasRow(
+            num=num,
+            name=name,
+            age=getattr(char, "age", "") or "",
+            gender=getattr(char, "gender", "") or "",
+            ethnicity=getattr(char, "ethnicity", "") or "",
+            build=getattr(char, "build", "") or "",
+            hair=getattr(char, "hair", "") or "",
+            eyes=getattr(char, "eyes", "") or "",
+            skin=getattr(char, "skin", "") or "",
+            clothing_style=getattr(char, "clothing_style", "") or "",
+            distinguishing_features=", ".join(getattr(char, "distinguishing_features", []) or []),
+            personality=getattr(char, "personality", "") or "",
+            art_style_tags=", ".join(getattr(char, "art_style_tags", []) or []),
+            visual_description=char.to_prompt_fragment() if char else "",
+            image_url=overrides.get("image_url", ""),
+            scenes_appears_in=", ".join(scene_ids),
+            notes=overrides.get("notes", ""),
+        ))
+
+    return rows
+
 
 # ---------------------------------------------------------------------------
-# Row builder
+# Row builder  (script lines)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -196,19 +288,17 @@ class SheetsExporter:
         self,
         script: Script,
         title: Optional[str] = None,
-        share_with: Optional[str] = None,   # email to share the sheet with
+        share_with: Optional[str] = None,
         service_account_json: Optional[str] = None,
         oauth_credentials: Optional[str] = None,
+        canvas_rows: Optional[list] = None,   # list[CharacterCanvasRow] — Tab 2
     ) -> str:
         """
-        Create (or overwrite) a Google Sheet for the script.
-        Returns the URL of the created spreadsheet.
+        Create a Google Sheet for the script with up to two tabs:
+          Tab 1 "Script"           — one row per dialog/action line
+          Tab 2 "Character Canvas" — one row per approved character (if canvas_rows provided)
 
-        Auth priority:
-          1. service_account_json  parameter
-          2. GOOGLE_SERVICE_ACCOUNT_JSON  env var  (path to JSON file)
-          3. oauth_credentials  parameter
-          4. GOOGLE_OAUTH_CREDENTIALS  env var  (path to credentials.json)
+        Returns the URL of the created spreadsheet.
         """
         gc = self._auth(service_account_json, oauth_credentials)
         sheet_title = title or f"{script.title} — Script Breakdown"
@@ -219,18 +309,101 @@ class SheetsExporter:
         ws = spreadsheet.sheet1
         ws.update_title("Script")
 
-        # Write header + data in one batch call
         all_values = [COLUMNS] + [r.as_list() for r in rows]
         ws.update("A1", all_values, value_input_option="USER_ENTERED")
-
-        # Formatting
         self._format_sheet(ws, rows, spreadsheet.id, gc)
 
-        # Share if requested
+        # Tab 2 — Character Canvas
+        if canvas_rows:
+            self.add_character_canvas_tab(spreadsheet, canvas_rows)
+
         if share_with:
             spreadsheet.share(share_with, perm_type="user", role="writer")
 
         return spreadsheet.url
+
+    # ------------------------------------------------------------------
+    # Character Canvas tab
+    # ------------------------------------------------------------------
+
+    def add_character_canvas_tab(self, spreadsheet, canvas_rows: list) -> None:
+        """
+        Add (or overwrite) a 'Character Canvas' worksheet as Tab 2.
+        Each row is one approved character with their description and image URL.
+        """
+        # Remove existing tab if present
+        try:
+            old = spreadsheet.worksheet("Character Canvas")
+            spreadsheet.del_worksheet(old)
+        except Exception:
+            pass
+
+        ws = spreadsheet.add_worksheet(title="Character Canvas", rows=200, cols=20)
+
+        all_values = [CANVAS_COLUMNS] + [r.as_list() for r in canvas_rows]
+        ws.update("A1", all_values, value_input_option="USER_ENTERED")
+
+        # Make image URLs clickable hyperlinks
+        for i, row in enumerate(canvas_rows, start=2):
+            if row.image_url and row.image_url.startswith("http"):
+                ws.update_cell(i, 15, f'=HYPERLINK("{row.image_url}","View Image")')
+
+        self._format_canvas_sheet(ws, canvas_rows)
+
+    def _format_canvas_sheet(self, ws, canvas_rows: list) -> None:
+        """Colour, freeze, and size the Character Canvas tab."""
+        try:
+            from gspread_formatting import (
+                CellFormat, Color, TextFormat,
+                format_cell_range, set_frozen, set_column_width,
+            )
+        except ImportError:
+            return
+
+        def _hex_to_color(h: str) -> Color:
+            h = h.lstrip("#")
+            r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+            return Color(r / 255, g / 255, b / 255)
+
+        # Header
+        header_fmt = CellFormat(
+            backgroundColor=_hex_to_color("#1A1A2E"),
+            textFormat=TextFormat(bold=True, foregroundColor=_hex_to_color("#FFFFFF"), fontSize=10),
+        )
+        format_cell_range(ws, f"A1:Q1", header_fmt)
+        set_frozen(ws, rows=1)
+
+        # Each character row gets their palette colour
+        for i, row in enumerate(canvas_rows, start=2):
+            color_hex = CHARACTER_COLORS[(row.num - 1) % len(CHARACTER_COLORS)]
+            fmt = CellFormat(backgroundColor=_hex_to_color(color_hex))
+            format_cell_range(ws, f"A{i}:Q{i}", fmt)
+
+        # Column widths
+        widths = {
+            1: 40,   # #
+            2: 120,  # Name
+            3: 80,   # Age
+            4: 80,   # Gender
+            5: 100,  # Ethnicity
+            6: 100,  # Build
+            7: 130,  # Hair
+            8: 100,  # Eyes
+            9: 100,  # Skin
+            10: 180, # Clothing
+            11: 200, # Distinguishing Features
+            12: 160, # Personality
+            13: 180, # Art Style Tags
+            14: 320, # Visual Description
+            15: 220, # Image URL
+            16: 180, # Scenes Appears In
+            17: 200, # Notes
+        }
+        for col, width in widths.items():
+            try:
+                set_column_width(ws, col, width)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Formatting helpers
