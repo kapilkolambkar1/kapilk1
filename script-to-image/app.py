@@ -214,8 +214,8 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
-tab_setup, tab_generate, tab_sheet, tab_gallery, tab_editor = st.tabs(
-    ["📂 Load Assets", "🎨 Generate", "📋 Image Sheet", "🖼️ Gallery", "✏️ Editor"]
+tab_setup, tab_generate, tab_sheet, tab_export, tab_gallery, tab_editor = st.tabs(
+    ["📂 Load Assets", "🎨 Generate", "📋 Image Sheet", "📊 Google Sheets", "🖼️ Gallery", "✏️ Editor"]
 )
 
 # ===========================================================================
@@ -608,7 +608,181 @@ with tab_sheet:
                 st.exception(e)
 
 # ===========================================================================
-# TAB 4 — Gallery
+# TAB 4 — Google Sheets / CSV Export
+# ===========================================================================
+with tab_export:
+    st.header("📊 Google Sheets Export")
+    st.caption(
+        "Breaks the script into rows — one row per dialog line or action beat — "
+        "and exports to **Google Sheets** or downloads as **CSV**."
+    )
+
+    if st.session_state.script is None:
+        st.info("Load a script in the **Load Assets** tab first.")
+    else:
+        script = st.session_state.script
+
+        # ── Live preview ────────────────────────────────────────────────
+        st.subheader("Preview")
+
+        from generators.sheets_exporter import _build_rows, COLUMNS
+        preview_rows = _build_rows(script)
+
+        import pandas as pd
+
+        df = pd.DataFrame([r.as_list() for r in preview_rows], columns=COLUMNS)
+
+        # Colour-code the dataframe by line type for display
+        def _row_style(row):
+            t = row["Type"]
+            if t == "SCENE HEADING":
+                return ["background-color: #2c3e50; color: #ecf0f1"] * len(row)
+            elif t == "ACTION":
+                return ["background-color: #f2f3f4"] * len(row)
+            else:
+                return [""] * len(row)
+
+        st.dataframe(
+            df.style.apply(_row_style, axis=1),
+            use_container_width=True,
+            height=380,
+        )
+        st.caption(f"{len(preview_rows)} rows · {len(script.scenes)} scenes")
+
+        st.divider()
+
+        # ── Export options ───────────────────────────────────────────────
+        col_csv, col_gsheet = st.columns(2, gap="large")
+
+        # ── CSV download (always available) ─────────────────────────────
+        with col_csv:
+            st.subheader("⬇️ Download CSV")
+            st.markdown(
+                "No API key needed. Download the CSV and import it into "
+                "Google Sheets via **File → Import**."
+            )
+
+            from generators.sheets_exporter import SheetsExporter
+            exp = SheetsExporter()
+            csv_bytes = exp.to_csv_bytes(script)
+
+            safe = script.title.replace(" ", "_")
+            st.download_button(
+                label="Download CSV",
+                data=csv_bytes,
+                file_name=f"{safe}_script.csv",
+                mime="text/csv",
+                type="primary",
+                use_container_width=True,
+            )
+
+        # ── Google Sheets direct push ────────────────────────────────────
+        with col_gsheet:
+            st.subheader("☁️ Push to Google Sheets")
+            st.markdown(
+                "Requires a **Google Service Account** or **OAuth** credentials. "
+                "The sheet is created in your Google Drive and shared with you."
+            )
+
+            with st.expander("🔑 Google credentials (click to expand)", expanded=False):
+                st.markdown(
+                    """
+**Option A — Service Account (recommended for automation)**
+1. Go to [console.cloud.google.com](https://console.cloud.google.com) → APIs & Services → Credentials
+2. Create a Service Account, download the JSON key
+3. Share your Google Drive folder with the service account email
+4. Paste the JSON content below **or** set `GOOGLE_SERVICE_ACCOUNT_JSON=/path/to/sa.json` in `.env`
+
+**Option B — OAuth (personal use)**
+1. Download `credentials.json` from Google Cloud Console (Desktop app OAuth)
+2. Set `GOOGLE_OAUTH_CREDENTIALS=/path/to/credentials.json` in `.env`
+                    """
+                )
+                sa_json_input = st.text_area(
+                    "Service Account JSON (paste full JSON here)",
+                    height=160,
+                    placeholder='{"type": "service_account", "project_id": "…", …}',
+                    key="sa_json_input",
+                )
+
+            sheet_title_input = st.text_input(
+                "Sheet title",
+                value=f"{script.title} — Script Breakdown",
+                key="sheet_title_input",
+            )
+            share_email = st.text_input(
+                "Share with (your email)",
+                placeholder="you@gmail.com",
+                key="share_email",
+            )
+
+            if st.button("🚀 Create Google Sheet", type="primary", use_container_width=True):
+                sa_path  = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+                oauth_p  = os.environ.get("GOOGLE_OAUTH_CREDENTIALS")
+                sa_json  = sa_json_input.strip() or None
+
+                # Write inline JSON to a temp file if provided
+                tmp_sa = None
+                if sa_json:
+                    import tempfile, json as _json
+                    try:
+                        _json.loads(sa_json)   # validate
+                        tmp = tempfile.NamedTemporaryFile(
+                            mode="w", suffix=".json", delete=False
+                        )
+                        tmp.write(sa_json)
+                        tmp.close()
+                        tmp_sa = tmp.name
+                    except _json.JSONDecodeError as e:
+                        st.error(f"Invalid JSON: {e}")
+                        st.stop()
+
+                try:
+                    with st.spinner("Creating Google Sheet…"):
+                        url = exp.to_google_sheets(
+                            script,
+                            title=sheet_title_input,
+                            share_with=share_email or None,
+                            service_account_json=tmp_sa or sa_path,
+                            oauth_credentials=oauth_p,
+                        )
+                    st.success("Google Sheet created!")
+                    st.markdown(f"**[Open Sheet]({url})**")
+                    st.code(url)
+                except Exception as e:
+                    st.error(f"Error: {e}")
+                    st.exception(e)
+                finally:
+                    if tmp_sa:
+                        Path(tmp_sa).unlink(missing_ok=True)
+
+        # ── Column legend ────────────────────────────────────────────────
+        st.divider()
+        st.subheader("Column Reference")
+        col_data = {
+            "Column": list("ABCDEFGHIJKLMN"),
+            "Name": COLUMNS,
+            "Description": [
+                "Sequential row number",
+                "Scene identifier (scene_01, scene_02 …)",
+                "Scene number (1, 2, 3 …)",
+                "Location name",
+                "Time of day",
+                "All characters present in the scene",
+                "Line position within the scene",
+                "DIALOG / ACTION / SCENE HEADING",
+                "Speaker (dialog rows only)",
+                "The dialog line or action text",
+                "Emotion / tone hint",
+                "YES if flagged for image generation",
+                "Image prompt (fill with Generate tab output)",
+                "Free notes for production use",
+            ],
+        }
+        st.dataframe(pd.DataFrame(col_data), use_container_width=True, hide_index=True)
+
+# ===========================================================================
+# TAB 5 — Gallery
 # ===========================================================================
 with tab_gallery:
     st.header("🖼️ Gallery")
@@ -643,7 +817,7 @@ with tab_gallery:
             st.rerun()
 
 # ===========================================================================
-# TAB 5 — Inline Editor
+# TAB 6 — Inline Editor
 # ===========================================================================
 with tab_editor:
     st.header("✏️ Inline JSON Editor")
