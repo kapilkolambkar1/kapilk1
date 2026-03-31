@@ -214,8 +214,8 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
-tab_setup, tab_generate, tab_gallery, tab_editor = st.tabs(
-    ["📂 Load Assets", "🎨 Generate", "🖼️ Gallery", "✏️ Editor"]
+tab_setup, tab_generate, tab_sheet, tab_gallery, tab_editor = st.tabs(
+    ["📂 Load Assets", "🎨 Generate", "📋 Image Sheet", "🖼️ Gallery", "✏️ Editor"]
 )
 
 # ===========================================================================
@@ -510,7 +510,105 @@ with tab_generate:
                 st.rerun()
 
 # ===========================================================================
-# TAB 3 — Gallery
+# TAB 3 — Image Sheet  (Pollinations.ai — free, no API key required)
+# ===========================================================================
+with tab_sheet:
+    st.header("📋 Image Sheet")
+    st.caption(
+        "Generates a single storyboard contact sheet — one image per scene — "
+        "using **[Pollinations.ai](https://pollinations.ai)** (free, no API key required)."
+    )
+
+    sheet_ready = (
+        st.session_state.char_sheet is not None
+        and st.session_state.loc_sheet is not None
+        and st.session_state.script is not None
+    )
+
+    if not sheet_ready:
+        st.info("Load characters, locations, and a script in the **Load Assets** tab first.")
+    else:
+        c1, c2 = st.columns(2)
+
+        scene_ids_sheet = ["All scenes"] + [s.id for s in st.session_state.script.scenes]
+        sheet_scene = c1.selectbox("Scenes", scene_ids_sheet, key="sheet_scene_sel")
+        sheet_cols = c2.slider("Columns per row", 1, 5, 3, key="sheet_cols")
+
+        c3, c4 = st.columns(2)
+        sheet_per_line = c3.toggle("One frame per dialog line", key="sheet_per_line")
+        sheet_model = c4.selectbox(
+            "Pollinations model",
+            ["flux", "flux-realism", "flux-anime", "flux-3d", "turbo"],
+            key="sheet_model",
+            help="flux = best quality · turbo = fastest",
+        )
+
+        sheet_style = st.text_input(
+            "Extra style tags (appended to every prompt)",
+            value=st.session_state.extra_style,
+            key="sheet_style",
+            placeholder="e.g. watercolor, noir, anime",
+        )
+
+        sheet_seed = st.number_input(
+            "Seed (0 = random)", min_value=0, max_value=2**31, value=0, key="sheet_seed"
+        )
+
+        if st.button("🎬 Build Image Sheet", type="primary", use_container_width=True):
+            if st.session_state.anthropic_key:
+                os.environ["ANTHROPIC_API_KEY"] = st.session_state.anthropic_key
+
+            try:
+                from generators.image_sheet import ImageSheetGenerator
+
+                gen = ImageSheetGenerator(
+                    anthropic_api_key=st.session_state.anthropic_key,
+                    cols=sheet_cols,
+                )
+
+                progress_bar = st.progress(0, text="Starting…")
+                status_text = st.empty()
+
+                def _on_progress(current, total, label):
+                    pct = current / max(total, 1)
+                    progress_bar.progress(pct, text=label)
+                    status_text.caption(label)
+
+                sheet_path = gen.build(
+                    script=st.session_state.script,
+                    characters=st.session_state.char_sheet,
+                    locations=st.session_state.loc_sheet,
+                    output_dir=str(OUTPUT_DIR),
+                    extra_style=sheet_style,
+                    per_line=sheet_per_line,
+                    scene_filter=None if sheet_scene == "All scenes" else sheet_scene,
+                    pollinations_model=sheet_model,
+                    seed=int(sheet_seed) if sheet_seed > 0 else None,
+                    on_progress=_on_progress,
+                )
+
+                progress_bar.progress(1.0, text="Done!")
+                status_text.empty()
+
+                st.success(f"Sheet saved: `{sheet_path.name}`")
+                sheet_img = Image.open(sheet_path)
+                st.image(sheet_img, caption=sheet_path.name, use_container_width=True)
+
+                with open(sheet_path, "rb") as f:
+                    st.download_button(
+                        "⬇️ Download Sheet PNG",
+                        f,
+                        file_name=sheet_path.name,
+                        mime="image/png",
+                        type="primary",
+                    )
+
+            except Exception as e:
+                st.error(f"Error building sheet: {e}")
+                st.exception(e)
+
+# ===========================================================================
+# TAB 4 — Gallery
 # ===========================================================================
 with tab_gallery:
     st.header("🖼️ Gallery")
@@ -545,7 +643,7 @@ with tab_gallery:
             st.rerun()
 
 # ===========================================================================
-# TAB 4 — Inline Editor
+# TAB 5 — Inline Editor
 # ===========================================================================
 with tab_editor:
     st.header("✏️ Inline JSON Editor")
