@@ -80,7 +80,7 @@ COLUMNS = [
     "Row", "Scene ID", "Scene #", "Location", "Time of Day",
     "Characters in Scene", "Line #", "Type", "Character",
     "Dialog / Action Text", "Emotion / Tone", "Gen Image?",
-    "Image Prompt", "Notes",
+    "Image Prompt", "Notes", "Image URL",
 ]
 
 # ---------------------------------------------------------------------------
@@ -196,6 +196,7 @@ class SheetRow:
     gen_image: str        # YES / —
     image_prompt: str = ""
     notes: str = ""
+    image_url: str = ""
 
     def as_list(self) -> list:
         return [
@@ -203,7 +204,7 @@ class SheetRow:
             self.location, self.time_of_day, self.characters_in_scene,
             self.line_num, self.line_type, self.character,
             self.text, self.emotion, self.gen_image,
-            self.image_prompt, self.notes,
+            self.image_prompt, self.notes, self.image_url,
         ]
 
 
@@ -444,11 +445,11 @@ class SheetsExporter:
                 bold=True, foregroundColor=_hex_to_color(HEADER_FG), fontSize=10
             ),
         )
-        format_cell_range(ws, "A1:N1", header_fmt)
+        format_cell_range(ws, "A1:O1", header_fmt)
 
         # Data rows
         for i, row in enumerate(rows, start=2):
-            cell_range = f"A{i}:N{i}"
+            cell_range = f"A{i}:O{i}"
 
             if row.line_type == "SCENE HEADING":
                 fmt = CellFormat(
@@ -487,6 +488,7 @@ class SheetsExporter:
             12: 90,  # Gen Image
             13: 300, # Image Prompt
             14: 180, # Notes
+            15: 250, # Image URL
         }
         for col, width in widths.items():
             try:

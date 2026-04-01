@@ -98,6 +98,9 @@ def _init_state():
         # Character Canvas approval state
         "canvas_chars": [],        # list of dicts per character
         "canvas_analyzed": False,
+        # Google Sheet push state
+        "gsheet_url": "",          # URL of last created sheet
+        "scene_image_results": [], # list of dicts from SceneImagePusher
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -923,6 +926,7 @@ with tab_export:
                             oauth_credentials=oauth_p,
                             canvas_rows=canvas_rows_to_push,
                         )
+                    st.session_state.gsheet_url = url
                     tab2_note = (f" + Character Canvas ({len(canvas_rows_to_push)} characters)"
                                  if canvas_rows_to_push else "")
                     st.success(f"Google Sheet created{tab2_note}!")
@@ -935,11 +939,196 @@ with tab_export:
                     if tmp_sa:
                         Path(tmp_sa).unlink(missing_ok=True)
 
+        # ── Generate & Push Scene Images to Sheet ─────────────────────────
+        st.divider()
+        st.subheader("🎬 Generate & Push Scene Images to Sheet")
+        st.caption(
+            "Once you have a Google Sheet, this step generates an AI image for "
+            "every dialog line and writes the **prompt** (col M) + **=IMAGE() URL** "
+            "(col O) directly into the sheet — using Pollinations.ai (free)."
+        )
+
+        if not st.session_state.gsheet_url:
+            st.info(
+                "Create a Google Sheet first using the **Push to Google Sheets** "
+                "button above. The sheet URL will appear here automatically."
+            )
+        else:
+            st.success(f"Active sheet: `{st.session_state.gsheet_url}`")
+
+            push_url = st.text_input(
+                "Google Sheet URL",
+                value=st.session_state.gsheet_url,
+                key="push_url_input",
+            )
+
+            p_c1, p_c2 = st.columns(2)
+            push_model = p_c1.selectbox(
+                "Pollinations model",
+                ["flux", "flux-realism", "flux-anime", "flux-3d", "turbo"],
+                key="push_model",
+                help="flux = best quality · turbo = fastest",
+            )
+            push_seed = p_c2.number_input(
+                "Seed (0 = random)", min_value=0, max_value=2**31, value=42, key="push_seed"
+            )
+
+            push_scenes_opts = ["All scenes"] + [s.id for s in script.scenes]
+            push_scene_sel = st.selectbox(
+                "Scenes to generate",
+                push_scenes_opts,
+                key="push_scene_sel",
+            )
+
+            push_style = st.text_input(
+                "Extra style tags",
+                value=st.session_state.extra_style,
+                key="push_extra_style",
+                placeholder="e.g. anime, watercolor, cinematic",
+            )
+
+            skip_existing = st.checkbox(
+                "Skip rows that already have an image URL",
+                value=True,
+                key="push_skip_existing",
+            )
+
+            p_btn1, p_btn2 = st.columns([1, 1])
+
+            # ── Push to Google Sheet (requires credentials) ──────────
+            if p_btn1.button(
+                "🚀 Generate & Push to Sheet", type="primary", use_container_width=True
+            ):
+                if st.session_state.anthropic_key:
+                    os.environ["ANTHROPIC_API_KEY"] = st.session_state.anthropic_key
+
+                sa_path = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+                sa_json = st.session_state.get("sa_json_input", "").strip() or None
+                tmp_sa = None
+                if sa_json:
+                    import tempfile, json as _json
+                    try:
+                        _json.loads(sa_json)
+                        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+                        tmp.write(sa_json)
+                        tmp.close()
+                        tmp_sa = tmp.name
+                    except _json.JSONDecodeError:
+                        pass
+
+                try:
+                    from generators.scene_image_pusher import SceneImagePusher
+
+                    pusher = SceneImagePusher(
+                        anthropic_api_key=st.session_state.anthropic_key,
+                        pollinations_model=push_model,
+                        seed=int(push_seed) if push_seed > 0 else None,
+                    )
+
+                    progress_bar = st.progress(0, text="Starting…")
+                    status_text = st.empty()
+
+                    def _push_progress(current, total, label):
+                        if total > 0:
+                            progress_bar.progress(current / total, text=label)
+                        status_text.caption(label)
+
+                    selected = (
+                        None if push_scene_sel == "All scenes"
+                        else [push_scene_sel]
+                    )
+
+                    count = pusher.run(
+                        spreadsheet_url=push_url,
+                        script=script,
+                        char_sheet=st.session_state.char_sheet,
+                        loc_sheet=st.session_state.loc_sheet,
+                        service_account_json=tmp_sa or sa_path,
+                        skip_existing=skip_existing,
+                        selected_scenes=selected,
+                        extra_style=push_style,
+                        on_progress=_push_progress,
+                    )
+
+                    progress_bar.progress(1.0, text="Done!")
+                    status_text.empty()
+                    st.success(f"Pushed **{count}** images to the sheet!")
+                    st.markdown(f"**[Open Sheet]({push_url})**")
+
+                except Exception as e:
+                    st.error(f"Error: {e}")
+                    st.exception(e)
+                finally:
+                    if tmp_sa:
+                        Path(tmp_sa).unlink(missing_ok=True)
+
+            # ── Preview locally (no Google credentials needed) ────────
+            if p_btn2.button(
+                "👁️ Preview Locally (no push)", use_container_width=True
+            ):
+                if st.session_state.anthropic_key:
+                    os.environ["ANTHROPIC_API_KEY"] = st.session_state.anthropic_key
+
+                try:
+                    from generators.scene_image_pusher import SceneImagePusher
+
+                    pusher = SceneImagePusher(
+                        anthropic_api_key=st.session_state.anthropic_key,
+                        pollinations_model=push_model,
+                        seed=int(push_seed) if push_seed > 0 else None,
+                    )
+
+                    progress_bar = st.progress(0, text="Starting…")
+
+                    def _local_progress(current, total, label):
+                        if total > 0:
+                            progress_bar.progress(current / total, text=label)
+
+                    selected = (
+                        None if push_scene_sel == "All scenes"
+                        else [push_scene_sel]
+                    )
+
+                    results = pusher.generate_prompts_and_urls(
+                        script=script,
+                        char_sheet=st.session_state.char_sheet,
+                        loc_sheet=st.session_state.loc_sheet,
+                        selected_scenes=selected,
+                        extra_style=push_style,
+                        on_progress=_local_progress,
+                    )
+
+                    progress_bar.progress(1.0, text="Done!")
+                    st.session_state.scene_image_results = results
+                    st.success(f"Generated **{len(results)}** prompts + URLs")
+
+                except Exception as e:
+                    st.error(f"Error: {e}")
+                    st.exception(e)
+
+        # Show local preview results
+        if st.session_state.scene_image_results:
+            st.markdown("---")
+            st.markdown("##### Local Preview")
+            for r in st.session_state.scene_image_results:
+                with st.expander(
+                    f"🎬 {r['scene_id']} — **{r['character']}**: _{r['text'][:50]}…_"
+                    if len(r["text"]) > 50
+                    else f"🎬 {r['scene_id']} — **{r['character']}**: _{r['text']}_",
+                    expanded=False,
+                ):
+                    c1, c2 = st.columns([1, 1])
+                    with c1:
+                        st.image(r["image_url"], caption=r["scene_id"], use_container_width=True)
+                    with c2:
+                        st.markdown(f"**Prompt:** {r['prompt']}")
+                        st.code(r["image_url"], language=None)
+
         # ── Column legend ────────────────────────────────────────────────
         st.divider()
         st.subheader("Column Reference")
         col_data = {
-            "Column": list("ABCDEFGHIJKLMN"),
+            "Column": list("ABCDEFGHIJKLMNO"),
             "Name": COLUMNS,
             "Description": [
                 "Sequential row number",
@@ -954,8 +1143,9 @@ with tab_export:
                 "The dialog line or action text",
                 "Emotion / tone hint",
                 "YES if flagged for image generation",
-                "Image prompt (fill with Generate tab output)",
+                "AI-generated image prompt text",
                 "Free notes for production use",
+                "=IMAGE() formula rendering the scene in the cell",
             ],
         }
         st.dataframe(pd.DataFrame(col_data), use_container_width=True, hide_index=True)
