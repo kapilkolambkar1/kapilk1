@@ -2,28 +2,29 @@
 Scene Image Pusher
 ==================
 After a Google Sheet has been created (Tab 1 = Script, Tab 2 = Character Canvas),
-this module:
-  1. Iterates through every dialog row in the Script tab
-  2. Generates a cinematic image prompt per dialog (Claude)
-  3. Builds a Pollinations.ai URL for the image (free, no API key)
-  4. Writes both the prompt and an =IMAGE() formula back into the sheet
+this module drives the 4-step pipeline per dialog row:
 
-The result: every dialog row in Google Sheets shows its corresponding
-AI-generated scene image right in the cell.
+  Col J  Dialog text      (already in sheet)
+  Col M  Image Prompt     ← Step 2: Claude generates from dialog + context
+  Col O  Image URL        ← Step 3: Pollinations.ai =IMAGE() formula
+  Col P  Video URL        ← Step 4: Replicate SVD =IMAGE() / video link
+
+Each step can be run independently — skip any step you don't need.
 
 Usage
 ─────
     from generators.scene_image_pusher import SceneImagePusher
 
-    pusher = SceneImagePusher(anthropic_api_key="sk-ant-...")
-    count = pusher.run(
-        spreadsheet_url="https://docs.google.com/spreadsheets/d/xxx",
-        script=script,
-        char_sheet=char_sheet,
-        loc_sheet=loc_sheet,
-        service_account_json="/path/to/sa.json",
-    )
-    print(f"Pushed {count} images")
+    pusher = SceneImagePusher(anthropic_api_key="sk-ant-...",
+                              replicate_token="r8_...")
+
+    # Step 2+3+4 all at once
+    pusher.run(spreadsheet_url="https://docs.google.com/...", ...)
+
+    # Steps individually
+    pusher.push_prompts(spreadsheet_url, ...)   # writes col M
+    pusher.push_images(spreadsheet_url, ...)    # reads col M → writes col O
+    pusher.push_videos(spreadsheet_url, ...)    # reads col O → writes col P
 """
 
 import os
@@ -36,61 +37,46 @@ from models.location import LocationSheet
 from models.script import Script, Scene
 
 
-# Column indices (1-based) in the "Script" worksheet
-COL_ROW        = 1
+# ── Column indices (1-based) in the "Script" worksheet ──────────────────────
 COL_SCENE_ID   = 2
-COL_TYPE       = 8
-COL_CHARACTER  = 9
-COL_TEXT       = 10
-COL_EMOTION    = 11
-COL_IMG_PROMPT = 13   # M
-COL_IMG_URL    = 15   # O  (we add this column)
-
+COL_TYPE       = 8   # H
+COL_CHARACTER  = 9   # I
+COL_TEXT       = 10  # J  ← dialog source
+COL_EMOTION    = 11  # K
+COL_IMG_PROMPT = 13  # M  ← step 2: generated prompt
+COL_IMG_URL    = 15  # O  ← step 3: image =IMAGE(url)
+COL_VIDEO_URL  = 16  # P  ← step 4: video url / =IMAGE(url)
 
 POLLINATIONS_BASE = "https://image.pollinations.ai/prompt"
 
 
 class SceneImagePusher:
     """
-    Generates images for every dialog line and pushes the URL
-    back into the Google Sheet's Script tab.
+    Drives the 4-step dialog → prompt → image → video pipeline,
+    writing results back into the Google Sheet per dialog row.
     """
 
     def __init__(
         self,
         anthropic_api_key: Optional[str] = None,
+        replicate_token: Optional[str] = None,
         pollinations_model: str = "flux",
         image_width: int = 1024,
         image_height: int = 576,
         seed: Optional[int] = 42,
+        video_fps: int = 8,
+        video_motion: int = 100,
     ):
-        self._api_key = anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        self.model = pollinations_model
-        self.width = image_width
-        self.height = image_height
-        self.seed = seed
+        self._api_key       = anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        self._rep_token     = replicate_token or os.environ.get("REPLICATE_API_TOKEN", "")
+        self.poll_model     = pollinations_model
+        self.width          = image_width
+        self.height         = image_height
+        self.seed           = seed
+        self.video_fps      = video_fps
+        self.video_motion   = video_motion
 
-    # ------------------------------------------------------------------
-    # Build a stable Pollinations URL
-    # ------------------------------------------------------------------
-
-    def build_image_url(self, prompt: str) -> str:
-        """
-        Return a Pollinations.ai URL that serves the generated image.
-        Using a fixed seed makes the URL deterministic.
-        """
-        encoded = urllib.parse.quote(prompt, safe="")
-        params = (
-            f"?width={self.width}&height={self.height}"
-            f"&model={self.model}&nologo=true&enhance=false"
-        )
-        if self.seed is not None:
-            params += f"&seed={self.seed}"
-        return f"{POLLINATIONS_BASE}/{encoded}{params}"
-
-    # ------------------------------------------------------------------
-    # Main pipeline
-    # ------------------------------------------------------------------
+    # ── Convenience: run all steps ──────────────────────────────────────────
 
     def run(
         self,
@@ -101,127 +87,265 @@ class SceneImagePusher:
         service_account_json: Optional[str] = None,
         oauth_credentials: Optional[str] = None,
         skip_existing: bool = True,
-        selected_scenes: Optional[list[str]] = None,   # None = all
+        selected_scenes: Optional[list[str]] = None,
         extra_style: str = "",
-        on_progress=None,           # callback(current, total, label)
-    ) -> int:
+        include_video: bool = False,
+        on_progress=None,
+    ) -> dict:
         """
-        Full pipeline:
-          1. Open the existing Google Sheet
-          2. Ensure "Image URL" header exists (column O)
-          3. For each DIALOG row → generate prompt → build image URL → update cells
-          4. Skip rows that already have an image URL (if skip_existing=True)
+        Run step 2 (prompts) + step 3 (images) and optionally step 4 (video).
+        Returns {"prompts": N, "images": N, "videos": N}.
+        """
+        ws = self._open_ws(spreadsheet_url, service_account_json, oauth_credentials)
+        self._ensure_headers(ws)
 
-        Returns the number of rows updated.
-        """
+        scene_map = {s.id: s for s in script.scenes}
+        rows = self._collect_dialog_rows(ws, selected_scenes, skip_existing,
+                                         check_col=COL_IMG_URL)
+
+        total = len(rows)
+        if on_progress:
+            on_progress(0, total, f"Found {total} dialog rows…")
+
         from generators.prompt_generator import PromptGenerator
-
-        # Auth + open sheet
-        gc = self._auth(service_account_json, oauth_credentials)
-        spreadsheet = gc.open_by_url(spreadsheet_url)
-        ws = spreadsheet.worksheet("Script")
-
-        # Ensure column O header exists
-        header_row = ws.row_values(1)
-        if len(header_row) < COL_IMG_URL or header_row[COL_IMG_URL - 1] != "Image URL":
-            ws.update_cell(1, COL_IMG_URL, "Image URL")
-
-        # Read all data to determine which rows need images
-        all_data = ws.get_all_values()
-        total_rows = len(all_data) - 1  # minus header
-
-        # Build scene lookup for context
-        scene_map: dict[str, Scene] = {s.id: s for s in script.scenes}
-
         prompt_gen = PromptGenerator(api_key=self._api_key)
 
-        updated = 0
-        dialog_rows = []
+        batch_m, batch_o, batch_p = [], [], []
+        p_count = i_count = v_count = 0
 
-        for row_idx in range(1, len(all_data)):  # 0-based data, 1-based sheet
-            row = all_data[row_idx]
-            line_type = row[COL_TYPE - 1] if len(row) >= COL_TYPE else ""
-            scene_id  = row[COL_SCENE_ID - 1] if len(row) >= COL_SCENE_ID else ""
-
-            # Skip non-dialog rows
-            if line_type != "DIALOG":
-                continue
-
-            # Scene filter
-            if selected_scenes and scene_id not in selected_scenes:
-                continue
-
-            # Skip if already has an image URL
-            existing_url = row[COL_IMG_URL - 1] if len(row) >= COL_IMG_URL else ""
-            if skip_existing and existing_url:
-                continue
-
-            dialog_rows.append((row_idx, row, scene_id))
-
-        total = len(dialog_rows)
-        if on_progress:
-            on_progress(0, total, f"Found {total} dialog rows to process…")
-
-        # Batch updates for performance
-        batch_prompt = []
-        batch_url = []
-
-        for i, (row_idx, row, scene_id) in enumerate(dialog_rows):
-            sheet_row = row_idx + 1  # convert to 1-based sheet row
-
-            character = row[COL_CHARACTER - 1] if len(row) >= COL_CHARACTER else ""
-            text      = row[COL_TEXT - 1] if len(row) >= COL_TEXT else ""
-            emotion   = row[COL_EMOTION - 1] if len(row) >= COL_EMOTION else ""
-
-            scene = scene_map.get(scene_id)
+        for i, (row_idx, row, scene_id) in enumerate(rows):
+            sheet_row = row_idx + 1
+            character = _cell(row, COL_CHARACTER)
+            text      = _cell(row, COL_TEXT)
+            emotion   = _cell(row, COL_EMOTION)
+            scene     = scene_map.get(scene_id)
             if not scene:
                 continue
 
-            label = f"{character}: {text[:40]}…" if len(text) > 40 else f"{character}: {text}"
+            label = f"{character}: {text[:45]}…" if len(text) > 45 else f"{character}: {text}"
+
+            # ── Step 2: generate prompt ──────────────────────────────────
             if on_progress:
-                on_progress(i, total, f"[{i+1}/{total}] Prompting — {label}")
+                on_progress(i, total, f"[{i+1}/{total}] Prompt — {label}")
 
-            # Find the line index within the scene for per-line prompt
-            line_index = self._find_line_index(scene, character, text)
-
-            if line_index is not None:
+            line_idx = self._find_line_index(scene, character, text)
+            if line_idx is not None:
                 prompt = prompt_gen.generate_per_line(
-                    scene, char_sheet, loc_sheet, line_index, extra_style
-                )
+                    scene, char_sheet, loc_sheet, line_idx, extra_style)
             else:
                 prompt = prompt_gen.generate(scene, char_sheet, loc_sheet, extra_style)
 
-            image_url = self.build_image_url(prompt)
+            batch_m.append({"range": f"M{sheet_row}", "values": [[prompt]]})
+            p_count += 1
 
-            # Queue cell updates
-            batch_prompt.append({"range": f"M{sheet_row}", "values": [[prompt]]})
-            batch_url.append({
+            # ── Step 3: image URL ────────────────────────────────────────
+            image_url = self.build_image_url(prompt)
+            batch_o.append({
                 "range": f"O{sheet_row}",
                 "values": [[f'=IMAGE("{image_url}")']],
             })
-            updated += 1
+            i_count += 1
 
-            # Flush in batches of 10 to avoid hitting API rate limits
-            if len(batch_prompt) >= 10:
-                self._flush_batch(ws, batch_prompt, batch_url)
-                batch_prompt.clear()
-                batch_url.clear()
+            # ── Step 4: video (optional) ─────────────────────────────────
+            if include_video and self._rep_token:
+                if on_progress:
+                    on_progress(i, total, f"[{i+1}/{total}] Video — {label}")
+                try:
+                    from generators.video_generator import VideoGenerator
+                    vg = VideoGenerator(replicate_token=self._rep_token,
+                                        fps=self.video_fps,
+                                        motion_bucket_id=self.video_motion)
+                    video_url = vg.generate(image_url)
+                    batch_p.append({"range": f"P{sheet_row}", "values": [[video_url]]})
+                    v_count += 1
+                except Exception:
+                    pass  # video failures are non-fatal
 
-        # Final flush
-        if batch_prompt:
-            self._flush_batch(ws, batch_prompt, batch_url)
+            # Flush every 10 rows
+            if len(batch_m) >= 10:
+                self._flush(ws, batch_m, batch_o, batch_p)
+                batch_m.clear(); batch_o.clear(); batch_p.clear()
+
+        self._flush(ws, batch_m, batch_o, batch_p)
+        self._set_row_heights(ws, [r[0] + 1 for r in rows])
 
         if on_progress:
-            on_progress(total, total, f"Done — {updated} images pushed to sheet")
+            on_progress(total, total, f"Done — {i_count} images pushed")
 
-        # Set row height for image visibility
-        self._set_image_row_heights(ws, [r[0] + 1 for r in dialog_rows])
+        return {"prompts": p_count, "images": i_count, "videos": v_count}
 
-        return updated
+    # ── Step 2 only: push prompts to col M ──────────────────────────────────
 
-    # ------------------------------------------------------------------
-    # Run without Google Sheets  —  local-only / CSV mode
-    # ------------------------------------------------------------------
+    def push_prompts(
+        self,
+        spreadsheet_url: str,
+        script: Script,
+        char_sheet: CharacterSheet,
+        loc_sheet: LocationSheet,
+        service_account_json: Optional[str] = None,
+        oauth_credentials: Optional[str] = None,
+        skip_existing: bool = True,
+        selected_scenes: Optional[list[str]] = None,
+        extra_style: str = "",
+        on_progress=None,
+    ) -> int:
+        """Generate prompts from dialog (col J) and write to col M. Returns count."""
+        from generators.prompt_generator import PromptGenerator
+        prompt_gen = PromptGenerator(api_key=self._api_key)
+
+        ws = self._open_ws(spreadsheet_url, service_account_json, oauth_credentials)
+        self._ensure_headers(ws)
+        scene_map = {s.id: s for s in script.scenes}
+        rows = self._collect_dialog_rows(ws, selected_scenes, skip_existing,
+                                         check_col=COL_IMG_PROMPT)
+
+        total = len(rows)
+        batch = []
+        count = 0
+        for i, (row_idx, row, scene_id) in enumerate(rows):
+            sheet_row = row_idx + 1
+            character = _cell(row, COL_CHARACTER)
+            text      = _cell(row, COL_TEXT)
+            scene     = scene_map.get(scene_id)
+            if not scene:
+                continue
+            if on_progress:
+                on_progress(i, total, f"[{i+1}/{total}] {character}: {text[:40]}")
+
+            line_idx = self._find_line_index(scene, character, text)
+            prompt = (
+                prompt_gen.generate_per_line(scene, char_sheet, loc_sheet, line_idx, extra_style)
+                if line_idx is not None
+                else prompt_gen.generate(scene, char_sheet, loc_sheet, extra_style)
+            )
+            batch.append({"range": f"M{sheet_row}", "values": [[prompt]]})
+            count += 1
+            if len(batch) >= 10:
+                ws.batch_update(batch, value_input_option="RAW")
+                batch.clear()
+        if batch:
+            ws.batch_update(batch, value_input_option="RAW")
+        return count
+
+    # ── Step 3 only: read col M prompts → generate images → write col O ─────
+
+    def push_images(
+        self,
+        spreadsheet_url: str,
+        service_account_json: Optional[str] = None,
+        oauth_credentials: Optional[str] = None,
+        skip_existing: bool = True,
+        selected_scenes: Optional[list[str]] = None,
+        on_progress=None,
+    ) -> int:
+        """
+        Read prompts from col M, generate Pollinations images, write =IMAGE() to col O.
+        Works even without a Script/CharacterSheet — prompts are already in the sheet.
+        """
+        ws = self._open_ws(spreadsheet_url, service_account_json, oauth_credentials)
+        self._ensure_headers(ws)
+        all_data = ws.get_all_values()
+
+        batch = []
+        img_rows = []
+        count = 0
+
+        rows_to_process = []
+        for row_idx in range(1, len(all_data)):
+            row = all_data[row_idx]
+            if _cell(row, COL_TYPE) != "DIALOG":
+                continue
+            scene_id = _cell(row, COL_SCENE_ID)
+            if selected_scenes and scene_id not in selected_scenes:
+                continue
+            existing = _cell(row, COL_IMG_URL)
+            if skip_existing and existing:
+                continue
+            prompt = _cell(row, COL_IMG_PROMPT)
+            if not prompt:
+                continue
+            rows_to_process.append((row_idx, prompt))
+
+        total = len(rows_to_process)
+        for i, (row_idx, prompt) in enumerate(rows_to_process):
+            sheet_row = row_idx + 1
+            if on_progress:
+                on_progress(i, total, f"[{i+1}/{total}] Generating image…")
+            img_url = self.build_image_url(prompt)
+            batch.append({"range": f"O{sheet_row}", "values": [[f'=IMAGE("{img_url}")']]})
+            img_rows.append(sheet_row)
+            count += 1
+            if len(batch) >= 10:
+                ws.batch_update(batch, value_input_option="USER_ENTERED")
+                batch.clear()
+        if batch:
+            ws.batch_update(batch, value_input_option="USER_ENTERED")
+
+        self._set_row_heights(ws, img_rows)
+        return count
+
+    # ── Step 4 only: read col O image URLs → generate videos → write col P ──
+
+    def push_videos(
+        self,
+        spreadsheet_url: str,
+        service_account_json: Optional[str] = None,
+        oauth_credentials: Optional[str] = None,
+        skip_existing: bool = True,
+        selected_scenes: Optional[list[str]] = None,
+        on_progress=None,
+    ) -> int:
+        """
+        Read image URLs from col O, generate SVD videos via Replicate, write to col P.
+        """
+        from generators.video_generator import VideoGenerator
+        vg = VideoGenerator(replicate_token=self._rep_token,
+                            fps=self.video_fps,
+                            motion_bucket_id=self.video_motion)
+
+        ws = self._open_ws(spreadsheet_url, service_account_json, oauth_credentials)
+        self._ensure_headers(ws)
+        all_data = ws.get_all_values()
+
+        count = 0
+        batch = []
+
+        rows_to_process = []
+        for row_idx in range(1, len(all_data)):
+            row = all_data[row_idx]
+            if _cell(row, COL_TYPE) != "DIALOG":
+                continue
+            scene_id = _cell(row, COL_SCENE_ID)
+            if selected_scenes and scene_id not in selected_scenes:
+                continue
+            if skip_existing and _cell(row, COL_VIDEO_URL):
+                continue
+            # Extract raw URL from =IMAGE("url") formula if needed
+            img_cell = _cell(row, COL_IMG_URL)
+            img_url = _extract_url(img_cell)
+            if not img_url:
+                continue
+            rows_to_process.append((row_idx, img_url))
+
+        total = len(rows_to_process)
+        for i, (row_idx, img_url) in enumerate(rows_to_process):
+            sheet_row = row_idx + 1
+            if on_progress:
+                on_progress(i, total, f"[{i+1}/{total}] Generating video…")
+            try:
+                video_url = vg.generate(img_url)
+                batch.append({"range": f"P{sheet_row}", "values": [[video_url]]})
+                count += 1
+            except Exception:
+                pass  # non-fatal
+            if len(batch) >= 5:
+                ws.batch_update(batch, value_input_option="USER_ENTERED")
+                batch.clear()
+        if batch:
+            ws.batch_update(batch, value_input_option="USER_ENTERED")
+        return count
+
+    # ── Local preview (no Google Sheets) ────────────────────────────────────
 
     def generate_prompts_and_urls(
         self,
@@ -230,108 +354,167 @@ class SceneImagePusher:
         loc_sheet: LocationSheet,
         selected_scenes: Optional[list[str]] = None,
         extra_style: str = "",
+        include_video: bool = False,
         on_progress=None,
     ) -> list[dict]:
         """
-        Generate prompts + Pollinations URLs for every dialog line.
-        Returns a list of dicts (scene_id, character, text, prompt, image_url).
-        Does NOT require Google Sheets auth.
+        Run the full pipeline locally without touching a Google Sheet.
+        Returns list of dicts: {scene_id, character, text, prompt, image_url, video_url}.
         """
         from generators.prompt_generator import PromptGenerator
         prompt_gen = PromptGenerator(api_key=self._api_key)
 
         results = []
-        scenes = [s for s in script.scenes if not selected_scenes or s.id in selected_scenes]
-
-        dialog_lines = []
-        for scene in scenes:
-            for li, line in enumerate(scene.lines):
-                if line.type == "dialog":
-                    dialog_lines.append((scene, li, line))
+        scenes = [s for s in script.scenes
+                  if not selected_scenes or s.id in selected_scenes]
+        dialog_lines = [
+            (scene, li, line)
+            for scene in scenes
+            for li, line in enumerate(scene.lines)
+            if line.type == "dialog"
+        ]
 
         total = len(dialog_lines)
         for i, (scene, li, line) in enumerate(dialog_lines):
             if on_progress:
-                on_progress(i, total, f"[{i+1}/{total}] {line.character}: {line.text[:40]}…")
+                on_progress(i, total,
+                            f"[{i+1}/{total}] {line.character}: {line.text[:40]}…")
 
-            prompt = prompt_gen.generate_per_line(
-                scene, char_sheet, loc_sheet, li, extra_style
-            )
-            url = self.build_image_url(prompt)
+            prompt    = prompt_gen.generate_per_line(
+                scene, char_sheet, loc_sheet, li, extra_style)
+            image_url = self.build_image_url(prompt)
+            video_url = ""
+
+            if include_video and self._rep_token:
+                try:
+                    from generators.video_generator import VideoGenerator
+                    vg = VideoGenerator(replicate_token=self._rep_token,
+                                        fps=self.video_fps,
+                                        motion_bucket_id=self.video_motion)
+                    video_url = vg.generate(image_url)
+                except Exception:
+                    pass
 
             results.append({
-                "scene_id": scene.id,
+                "scene_id":  scene.id,
                 "character": line.character or "",
-                "text": line.text,
-                "emotion": line.emotion or "",
-                "prompt": prompt,
-                "image_url": url,
+                "text":      line.text,
+                "emotion":   line.emotion or "",
+                "prompt":    prompt,
+                "image_url": image_url,
+                "video_url": video_url,
             })
 
         return results
 
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
+    # ── Utilities ────────────────────────────────────────────────────────────
 
-    def _find_line_index(self, scene: Scene, character: str, text: str) -> Optional[int]:
-        """Find the index of a dialog line within a Scene by matching character + text."""
+    def build_image_url(self, prompt: str) -> str:
+        encoded = urllib.parse.quote(prompt, safe="")
+        params = (f"?width={self.width}&height={self.height}"
+                  f"&model={self.poll_model}&nologo=true&enhance=false")
+        if self.seed is not None:
+            params += f"&seed={self.seed}"
+        return f"{POLLINATIONS_BASE}/{encoded}{params}"
+
+    def _open_ws(self, url, sa_json, oauth):
+        gc = self._auth(sa_json, oauth)
+        return gc.open_by_url(url).worksheet("Script")
+
+    def _ensure_headers(self, ws):
+        header = ws.row_values(1)
+        updates = []
+        if len(header) < COL_IMG_PROMPT or header[COL_IMG_PROMPT-1] != "Image Prompt":
+            updates.append({"range": f"M1", "values": [["Image Prompt"]]})
+        if len(header) < COL_IMG_URL or header[COL_IMG_URL-1] != "Image URL":
+            updates.append({"range": f"O1", "values": [["Image URL"]]})
+        if len(header) < COL_VIDEO_URL or header[COL_VIDEO_URL-1] != "Video URL":
+            updates.append({"range": f"P1", "values": [["Video URL"]]})
+        if updates:
+            ws.batch_update(updates, value_input_option="RAW")
+
+    def _collect_dialog_rows(self, ws, selected_scenes, skip_existing, check_col):
+        all_data = ws.get_all_values()
+        rows = []
+        for row_idx in range(1, len(all_data)):
+            row = all_data[row_idx]
+            if _cell(row, COL_TYPE) != "DIALOG":
+                continue
+            scene_id = _cell(row, COL_SCENE_ID)
+            if selected_scenes and scene_id not in selected_scenes:
+                continue
+            if skip_existing and _cell(row, check_col):
+                continue
+            rows.append((row_idx, row, scene_id))
+        return rows
+
+    def _flush(self, ws, batch_m, batch_o, batch_p):
+        if batch_m:
+            ws.batch_update(batch_m, value_input_option="RAW")
+        if batch_o:
+            ws.batch_update(batch_o, value_input_option="USER_ENTERED")
+        if batch_p:
+            ws.batch_update(batch_p, value_input_option="USER_ENTERED")
+
+    def _set_row_heights(self, ws, sheet_rows: list[int]):
+        try:
+            reqs = [{
+                "updateDimensionProperties": {
+                    "range": {"sheetId": ws.id, "dimension": "ROWS",
+                              "startIndex": r - 1, "endIndex": r},
+                    "properties": {"pixelSize": 130},
+                    "fields": "pixelSize",
+                }
+            } for r in sheet_rows]
+            if reqs:
+                ws.spreadsheet.batch_update({"requests": reqs})
+        except Exception:
+            pass
+
+    def _find_line_index(self, scene, character, text):
         for i, line in enumerate(scene.lines):
             if (line.type == "dialog"
-                and line.character and line.character.lower() == character.lower()
-                and line.text.strip() == text.strip()):
+                    and line.character
+                    and line.character.lower() == character.lower()
+                    and line.text.strip() == text.strip()):
                 return i
-        # Fuzzy fallback — match by character + first 30 chars
         for i, line in enumerate(scene.lines):
             if (line.type == "dialog"
-                and line.character and line.character.lower() == character.lower()
-                and line.text[:30].strip() == text[:30].strip()):
+                    and line.character
+                    and line.character.lower() == character.lower()
+                    and line.text[:30].strip() == text[:30].strip()):
                 return i
         return None
 
-    def _flush_batch(self, ws, batch_prompt, batch_url):
-        """Write queued cell updates to the sheet."""
-        ws.batch_update(batch_prompt, value_input_option="RAW")
-        ws.batch_update(batch_url, value_input_option="USER_ENTERED")
-
-    def _set_image_row_heights(self, ws, sheet_rows: list[int]):
-        """Set row height to 120px for rows that contain images."""
-        try:
-            requests = []
-            for row in sheet_rows:
-                requests.append({
-                    "updateDimensionProperties": {
-                        "range": {
-                            "sheetId": ws.id,
-                            "dimension": "ROWS",
-                            "startIndex": row - 1,
-                            "endIndex": row,
-                        },
-                        "properties": {"pixelSize": 120},
-                        "fields": "pixelSize",
-                    }
-                })
-            if requests:
-                ws.spreadsheet.batch_update({"requests": requests})
-        except Exception:
-            pass  # row height is cosmetic — silently skip on error
-
     def _auth(self, service_account_json, oauth_credentials):
-        """Re-use the same auth logic as SheetsExporter."""
         import gspread
         sa_path = service_account_json or os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
         if sa_path and Path(sa_path).exists():
             return gspread.service_account(filename=sa_path)
-
-        sa_json_str = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_CONTENT")
-        if sa_json_str:
-            import json, tempfile
+        sa_str = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_CONTENT")
+        if sa_str:
+            import tempfile
             with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-                f.write(sa_json_str)
+                f.write(sa_str)
                 return gspread.service_account(filename=f.name)
-
         oauth_path = oauth_credentials or os.environ.get("GOOGLE_OAUTH_CREDENTIALS")
         if oauth_path and Path(oauth_path).exists():
             return gspread.oauth(credentials_filename=oauth_path)
-
         raise ValueError("No Google credentials found.")
+
+
+# ── Module helpers ────────────────────────────────────────────────────────────
+
+def _cell(row: list, col: int) -> str:
+    """Safe 1-based column access."""
+    return row[col - 1].strip() if len(row) >= col else ""
+
+
+def _extract_url(cell_value: str) -> str:
+    """Extract raw URL from =IMAGE("url") formula or return as-is if already a URL."""
+    v = cell_value.strip()
+    if v.startswith('=IMAGE("') and v.endswith('")'):
+        return v[8:-2]
+    if v.startswith("http"):
+        return v
+    return ""

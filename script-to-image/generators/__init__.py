@@ -3,8 +3,9 @@ from .image_generator import ImageGenerator
 from .image_sheet import ImageSheetGenerator, SheetFrame
 from .sheets_exporter import SheetsExporter
 from .scene_image_pusher import SceneImagePusher
+from .video_generator import VideoGenerator
 
 __all__ = [
     "PromptGenerator", "ImageGenerator", "ImageSheetGenerator",
-    "SheetFrame", "SheetsExporter", "SceneImagePusher",
+    "SheetFrame", "SheetsExporter", "SceneImagePusher", "VideoGenerator",
 ]
