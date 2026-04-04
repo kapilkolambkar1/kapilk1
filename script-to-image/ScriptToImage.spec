@@ -1,7 +1,11 @@
 # PyInstaller spec file for Script-to-Image Generator
-# Build with:
+# --------------------------------------------------------
+# Build on Windows:
 #   pip install pyinstaller
 #   pyinstaller ScriptToImage.spec
+#
+# Output: dist\ScriptToImage\ScriptToImage.exe
+# --------------------------------------------------------
 
 import os
 from pathlib import Path
@@ -15,14 +19,17 @@ a = Analysis(
     pathex=[str(ROOT)],
     binaries=[],
     datas=[
-        # Bundle the Streamlit app and all source modules
-        (str(ROOT / "app.py"),             "."),
+        # Core app files
+        (str(ROOT / "gui_app.py"),          "."),
+        (str(ROOT / "app.py"),              "."),
         (str(ROOT / "config.py"),           "."),
+        # Modules
         (str(ROOT / "models"),              "models"),
         (str(ROOT / "generators"),          "generators"),
+        (str(ROOT / "parsers"),             "parsers"),
         (str(ROOT / "examples"),            "examples"),
         (str(ROOT / ".env.example"),        "."),
-        # Streamlit static assets
+        # Streamlit static assets (required for bundled exe)
         (os.path.join(os.path.dirname(__import__("streamlit").__file__), "static"),
          "streamlit/static"),
         (os.path.join(os.path.dirname(__import__("streamlit").__file__), "runtime"),
@@ -34,6 +41,7 @@ a = Analysis(
         "streamlit.web.cli",
         "streamlit.web.server",
         "streamlit.runtime.scriptrunner",
+        "streamlit.components.v1",
         # Our modules
         "models",
         "models.character",
@@ -42,16 +50,42 @@ a = Analysis(
         "generators",
         "generators.prompt_generator",
         "generators.image_generator",
-        # Dependencies
+        "generators.image_sheet",
+        "generators.sheets_exporter",
+        "generators.scene_image_pusher",
+        "generators.video_generator",
+        "parsers",
+        "parsers.docx_parser",
+        # python-docx internals
+        "docx",
+        "docx.oxml",
+        "docx.oxml.ns",
+        "docx.parts.document",
+        "docx.parts.image",
+        "lxml",
+        "lxml.etree",
+        "lxml._elementpath",
+        # Google / gspread
+        "gspread",
+        "gspread.auth",
+        "gspread_formatting",
+        "google.auth",
+        "google.auth.transport.requests",
+        "google.oauth2.service_account",
+        # AI & media
         "anthropic",
         "replicate",
         "PIL",
         "PIL.Image",
         "PIL.ImageDraw",
+        "PIL.ImageFont",
+        # Utilities
         "dotenv",
         "click",
         "requests",
         "rich",
+        "pandas",
+        # Streamlit extras
         "altair",
         "pydeck",
         "pyarrow",
@@ -89,7 +123,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,               # Add an .ico path here if you have one
+    icon=None,               # Set to "assets/icon.ico" if you add an icon
 )
 
 coll = COLLECT(

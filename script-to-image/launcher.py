@@ -54,7 +54,7 @@ def main() -> None:
     threading.Thread(target=_wait_and_open, args=(port,), daemon=True).start()
 
     # Launch Streamlit
-    app_path = _resource_path("app.py")
+    app_path = _resource_path("gui_app.py")
 
     import streamlit.web.cli as stcli
     sys.argv = [
