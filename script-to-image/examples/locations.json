@@ -1,0 +1,34 @@
+[
+  {
+    "name": "neon alley",
+    "description": "narrow rain-slicked urban alley, towering neon signs in red and blue reflecting off wet cobblestones, steam rising from grates, laundry lines overhead",
+    "time_of_day": "midnight",
+    "weather": "light rain, mist",
+    "mood": "noir, tense",
+    "art_style_tags": ["cyberpunk", "blade runner aesthetic", "volumetric fog"]
+  },
+  {
+    "name": "server room",
+    "description": "vast underground server room, rows of towering black server racks with blinking blue LEDs, cold white overhead lighting, cables bundled along ceiling",
+    "time_of_day": "timeless interior",
+    "weather": "climate-controlled",
+    "mood": "sterile, ominous",
+    "art_style_tags": ["sci-fi", "high-tech", "cool color palette"]
+  },
+  {
+    "name": "rooftop garden",
+    "description": "elevated rooftop garden above the city, planter boxes full of wildflowers and herbs, rusted fire escapes visible, skyline glittering in the distance",
+    "time_of_day": "golden hour sunset",
+    "weather": "clear sky, warm light",
+    "mood": "bittersweet, hopeful",
+    "art_style_tags": ["warm cinematic tones", "shallow depth of field", "bokeh city lights"]
+  },
+  {
+    "name": "abandoned warehouse",
+    "description": "derelict industrial warehouse, broken skylights letting shafts of dust-filled light pierce the darkness, rusted machinery, graffiti on crumbling brick walls",
+    "time_of_day": "dusk, fading light",
+    "weather": "overcast",
+    "mood": "foreboding, isolated",
+    "art_style_tags": ["gritty realism", "chiaroscuro lighting", "post-industrial"]
+  }
+]
